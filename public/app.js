@@ -633,10 +633,7 @@ function appendAlbumPage(tab, data) {
   const grid = app.querySelector("[data-tab-grid]");
   if (!grid) return;
 
-  grid.className = "album-pages";
-  grid.dataset.albumPages = albumPageSignature(tab);
-  grid.insertAdjacentHTML("beforeend", albumPageShell(entry));
-  syncVisibleAlbumPages({ force: true });
+  renderAlbumTabGrid(tab, { force: true });
 }
 
 function albumPageSignature(tab) {
@@ -648,10 +645,14 @@ function renderAlbumTabGrid(tab, options = {}) {
   const state = tabs[tab];
   const grid = app.querySelector("[data-tab-grid]");
   if (!state || !grid) return;
+  if (location.pathname !== "/" || activeTab !== tab || searchQuery) return;
 
+  const wasAlbumGrid = grid.dataset.gridKind === `albums:${tab}`;
   grid.className = "album-pages";
+  grid.dataset.gridKind = `albums:${tab}`;
+  delete grid.dataset.photoPages;
   const signature = albumPageSignature(tab);
-  if (options.force || grid.dataset.albumPages !== signature) {
+  if (options.force || !wasAlbumGrid || grid.dataset.albumPages !== signature || grid.querySelector(".photo-page")) {
     grid.dataset.albumPages = signature;
     state.pages.forEach((entry) => {
       entry.rendered = false;
@@ -769,6 +770,7 @@ function schedulePhotoRelayout() {
   clearTimeout(photoRelayoutTimer);
   photoRelayoutTimer = setTimeout(() => {
     photoRelayoutTimer = null;
+    if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
     renderPhotoTabGrid({ force: true });
   }, 420);
 }
@@ -839,6 +841,7 @@ function renderPhotoTabGrid(options = {}) {
   const state = tabs.photos;
   const grid = app.querySelector("[data-tab-grid]");
   if (!grid) return;
+  if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
 
   const config = photoLayoutConfig(grid);
   if (config.width < 100) return;
@@ -848,9 +851,15 @@ function renderPhotoTabGrid(options = {}) {
   }
 
   grid.className = "photo-pages photos-waterfall";
+  const wasPhotoGrid = grid.dataset.gridKind === "photos";
+  grid.dataset.gridKind = "photos";
+  delete grid.dataset.albumPages;
   const signature = `${state.mode}:${state.seed}:${state.photoLayoutKey}:${state.photos.length}:${state.pages.length}`;
-  if (options.force || grid.dataset.photoPages !== signature) {
+  if (options.force || !wasPhotoGrid || grid.dataset.photoPages !== signature || grid.querySelector(".album-page")) {
     grid.dataset.photoPages = signature;
+    state.pages.forEach((entry) => {
+      entry.rendered = false;
+    });
     grid.innerHTML = state.pages.map(photoPageShell).join("");
   }
   syncVisiblePhotoPages(options);
