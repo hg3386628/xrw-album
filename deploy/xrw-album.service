@@ -1,0 +1,21 @@
+[Unit]
+Description=XRW Album
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/app/xrw-album
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=26785
+ExecStart=/usr/bin/node /home/ubuntu/app/xrw-album/server.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
