@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>墨影集</title>
+    <link rel="icon" href="/xrw-album/favicon.svg?v=1" type="image/svg+xml">
+    <link rel="stylesheet" href="/xrw-album/styles.css?v=20260702-23">
+
+    <script>
+      window.__XRW_BASE_PATH = "/xrw-album";
+      window.__XRW_STATIC_DATA_BASE = "/xrw-album/data";
+    </script>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("theme");
+          if (theme === "light" || theme === "dark") {
+            document.documentElement.setAttribute("data-theme", theme);
+          }
+        } catch (error) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app" class="app-shell" aria-live="polite">
+      <div class="detail-loading">
+        <span class="detail-loading-dot"></span>
+        <span class="detail-loading-dot"></span>
+        <span class="detail-loading-dot"></span>
+      </div>
+    </div>
+    <script type="module" src="/xrw-album/app.js?v=20260702-23"></script>
+  </body>
+</html>
