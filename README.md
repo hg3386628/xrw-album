@@ -4,9 +4,10 @@
 
 ## 预览
 
+- GitHub Pages 静态版：[https://hg3386628.github.io/xrw-album/](https://hg3386628.github.io/xrw-album/)
 - Workers + D1 测试预览：[https://xrw-album-workers.cfmxy123.workers.dev](https://xrw-album-workers.cfmxy123.workers.dev)
 
-说明：Workers 预览站当前使用 D1 样本数据，用于验证 Cloudflare Workers Static Assets + D1 部署链路。
+说明：GitHub Pages 静态版是只读镜像，点赞保存在浏览器本地；Workers 预览站当前使用 D1 样本数据，用于验证 Cloudflare Workers Static Assets + D1 部署链路。
 
 ## 功能
 

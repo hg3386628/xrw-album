@@ -9,6 +9,7 @@ data/likes.json
 data/d1-*.sql
 .wrangler/
 dist-worker-dry-run/
+dist-gh-pages/
 
 local-*.png
 remote-*.png

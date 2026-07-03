@@ -15,6 +15,8 @@ const IMAGE_SIZE_CACHE_LIMIT = 1600;
 const MAX_RENDERED_ALBUM_PAGES = 2;
 const MAX_RENDERED_PHOTO_PAGES = 2;
 const MAX_RENDERED_DETAIL_PAGES = 2;
+const STATIC_DATA_BASE = window.__XRW_STATIC_DATA_BASE || "";
+const BASE_PATH = normalizeBasePath(window.__XRW_BASE_PATH || "");
 
 let homeManifest = null;
 let activeTab = "photos";
@@ -36,6 +38,55 @@ let detailSyncFrame = null;
 let detailResizeTimer = null;
 let detailRelayoutTimer = null;
 let lastAutoLoadAt = 0;
+
+const staticData = {
+  manifest: null,
+  albums: null,
+  details: new Map(),
+  shards: new Map(),
+  albumOffsets: null,
+  randomAlbums: new Map(),
+  likes: readStaticLikes()
+};
+
+function normalizeBasePath(value) {
+  const path = String(value || "").replace(/\/+$/, "");
+  return path === "/" ? "" : path;
+}
+
+function appPathname() {
+  const pathname = location.pathname || "/";
+  if (BASE_PATH && (pathname === BASE_PATH || pathname.startsWith(`${BASE_PATH}/`))) {
+    return pathname.slice(BASE_PATH.length) || "/";
+  }
+  return pathname;
+}
+
+function appUrl(path) {
+  if (!BASE_PATH || /^https?:\/\//i.test(path)) return path;
+  return `${BASE_PATH}${path === "/" ? "" : path}`;
+}
+
+function dataUrl(path) {
+  const base = STATIC_DATA_BASE || `${BASE_PATH || ""}/data`;
+  return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+function readStaticLikes() {
+  try {
+    return JSON.parse(localStorage.getItem("xrw-album-static-likes") || '{"albums":{},"photos":{}}');
+  } catch {
+    return { albums: {}, photos: {} };
+  }
+}
+
+function saveStaticLikes() {
+  try {
+    localStorage.setItem("xrw-album-static-likes", JSON.stringify(staticData.likes));
+  } catch {
+    // Static GitHub Pages builds keep likes local when storage is available.
+  }
+}
 
 function createTabsState() {
   return {
@@ -105,7 +156,82 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function normalizeImageUrl(value) {
+  return String(value || "")
+    .replace("https://telegra.phhttps://legra.ph/file/", "https://telegra.ph/file/")
+    .replace("https://telegra.phhttps//legra.ph/file/", "https://telegra.ph/file/");
+}
+
+function seedFrom(value) {
+  const input = String(value || Date.now());
+  let seed = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    seed ^= input.charCodeAt(index);
+    seed = Math.imul(seed, 16777619);
+  }
+  return seed >>> 0;
+}
+
+function random(seed) {
+  let state = seed || 1;
+  return () => {
+    state = Math.imul(1664525, state) + 1013904223;
+    return (state >>> 0) / 4294967296;
+  };
+}
+
+function sample(source, count, seedValue) {
+  const result = [];
+  const used = new Set();
+  const rand = random(seedFrom(seedValue));
+  const limit = Math.min(count, source.length);
+
+  while (result.length < limit) {
+    const index = Math.floor(rand() * source.length);
+    if (used.has(index)) continue;
+    used.add(index);
+    result.push(source[index]);
+  }
+
+  return result;
+}
+
+function greatestCommonDivisor(left, right) {
+  let a = Math.abs(left);
+  let b = Math.abs(right);
+  while (b) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+  return a;
+}
+
+function coprimePhotoStep(total, seedValue) {
+  if (total <= 1) return 0;
+  let step = seedFrom(`step:${seedValue}`) % total;
+  if (!step) step = 1;
+
+  while (greatestCommonDivisor(step, total) !== 1) {
+    step += 1;
+    if (step >= total) step = 1;
+  }
+
+  return step;
+}
+
+function randomPhotoOffset(position, total, seedValue) {
+  if (total <= 1) return 0;
+  const step = coprimePhotoStep(total, seedValue);
+  const shift = seedFrom(`shift:${seedValue}`) % total;
+  return (position * step + shift) % total;
+}
+
 async function getJson(url, options) {
+  if (STATIC_DATA_BASE && String(url).startsWith("/api/")) {
+    return staticGetJson(url, options);
+  }
+
   const response = await fetch(url, {
     headers: { Accept: "application/json" },
     ...options
@@ -115,6 +241,245 @@ async function getJson(url, options) {
     throw new Error(data?.error || `Request failed: ${response.status}`);
   }
   return data;
+}
+
+async function staticGetJson(url, options = {}) {
+  const requestUrl = new URL(url, location.origin);
+  const path = requestUrl.pathname;
+
+  if ((options.method || "GET").toUpperCase() === "POST" && path === "/api/like") {
+    return staticLikeResponse(options);
+  }
+
+  if (path === "/api/health") {
+    const manifest = await staticManifest();
+    return {
+      ok: true,
+      albumCount: manifest.albumCount,
+      photoCount: manifest.photoCount,
+      builtAt: manifest.builtAt
+    };
+  }
+
+  if (path === "/api/home") {
+    const manifest = await staticManifest();
+    const albums = await staticAlbums();
+    const seed = requestUrl.searchParams.get("seed") || Date.now();
+    const recentSeed = requestUrl.searchParams.get("recentSeed");
+    const recentAlbums = [...albums].reverse();
+    return {
+      ok: true,
+      manifest,
+      recentAlbums: (recentSeed ? sample(recentAlbums, 16, recentSeed) : recentAlbums.slice(0, 16)).map(withStaticLike),
+      albums: sample(albums, 16, seed).map(withStaticLike)
+    };
+  }
+
+  if (path === "/api/albums") {
+    return staticAlbumsResponse(requestUrl);
+  }
+
+  if (path === "/api/photos") {
+    return staticPhotosResponse(requestUrl);
+  }
+
+  if (path.startsWith("/api/album/")) {
+    const id = decodeURIComponent(path.slice("/api/album/".length));
+    const albums = await staticAlbums();
+    const album = albums.find((item) => item.id === id);
+    if (!album) throw new Error("Not found");
+    const detail = await staticAlbumDetail(id);
+    return {
+      ok: true,
+      album: withStaticLike(album),
+      photos: detail.photos.map((photo) => ({
+        ...photo,
+        url: normalizeImageUrl(photo.url)
+      })),
+      likeCount: staticData.likes.albums[id] || 0
+    };
+  }
+
+  throw new Error(`Static route not found: ${path}`);
+}
+
+async function fetchStaticJson(path) {
+  const response = await fetch(dataUrl(path), {
+    headers: { Accept: "application/json" }
+  });
+  if (!response.ok) throw new Error(`Static data failed: ${response.status}`);
+  return response.json();
+}
+
+async function staticManifest() {
+  if (!staticData.manifest) {
+    staticData.manifest = await fetchStaticJson("manifest.json");
+  }
+  return staticData.manifest;
+}
+
+async function staticAlbums() {
+  if (!staticData.albums) {
+    staticData.albums = await fetchStaticJson("albums.json");
+  }
+  return staticData.albums;
+}
+
+async function staticAlbumDetail(id) {
+  if (!staticData.details.has(id)) {
+    const shardKey = id.slice(0, 3);
+    if (!staticData.shards.has(shardKey)) {
+      staticData.shards.set(shardKey, await fetchStaticJson(`photo-shards/${encodeURIComponent(shardKey)}.json`));
+    }
+    const detail = staticData.shards.get(shardKey)?.[id];
+    if (!detail) throw new Error(`Static album detail not found: ${id}`);
+    staticData.details.set(id, detail);
+  }
+  return staticData.details.get(id);
+}
+
+function withStaticLike(album) {
+  return {
+    ...album,
+    cover: normalizeImageUrl(album.cover),
+    likes: staticData.likes.albums[album.id] || 0
+  };
+}
+
+function staticShuffledAlbums(albums, seedValue) {
+  const key = String(seedValue || "default");
+  if (staticData.randomAlbums.has(key)) return staticData.randomAlbums.get(key);
+
+  const result = [...albums];
+  const rand = random(seedFrom(key));
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(rand() * (index + 1));
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  staticData.randomAlbums.set(key, result);
+  while (staticData.randomAlbums.size > 8) {
+    staticData.randomAlbums.delete(staticData.randomAlbums.keys().next().value);
+  }
+  return result;
+}
+
+async function staticAlbumsResponse(requestUrl) {
+  const albums = await staticAlbums();
+  const query = (requestUrl.searchParams.get("q") || "").trim().toLocaleLowerCase();
+  const mode = requestUrl.searchParams.get("mode") || "all";
+  const seed = requestUrl.searchParams.get("seed") || "default";
+  const page = Math.max(1, Number(requestUrl.searchParams.get("page") || 1));
+  const limit = Math.min(48, Math.max(8, Number(requestUrl.searchParams.get("limit") || 24)));
+  const matched = query
+    ? albums.filter((album) => album.title.toLocaleLowerCase().includes(query))
+    : mode === "recent"
+      ? [...albums].reverse()
+      : mode === "random"
+        ? staticShuffledAlbums(albums, seed)
+        : albums;
+  const start = (page - 1) * limit;
+
+  return {
+    ok: true,
+    mode,
+    seed,
+    page,
+    limit,
+    total: matched.length,
+    albums: matched.slice(start, start + limit).map(withStaticLike)
+  };
+}
+
+async function staticPhotoOffsets() {
+  if (staticData.albumOffsets) return staticData.albumOffsets;
+
+  const albums = [...await staticAlbums()].reverse();
+  let running = 0;
+  staticData.albumOffsets = albums.map((album) => {
+    const entry = {
+      album,
+      start: running,
+      end: running + album.count
+    };
+    running = entry.end;
+    return entry;
+  });
+  return staticData.albumOffsets;
+}
+
+async function staticPhotoFromOffset(offset) {
+  const offsets = await staticPhotoOffsets();
+  const entry = offsets.find((item) => offset >= item.start && offset < item.end);
+  if (!entry) return null;
+  const detail = await staticAlbumDetail(entry.album.id);
+  const photo = detail.photos[offset - entry.start];
+  if (!photo) return null;
+  return {
+    id: `${entry.album.id}-${photo.id}`,
+    albumId: entry.album.id,
+    albumTitle: entry.album.title,
+    albumHref: entry.album.href,
+    photoId: photo.id,
+    url: normalizeImageUrl(photo.url)
+  };
+}
+
+async function staticPhotosResponse(requestUrl) {
+  const manifest = await staticManifest();
+  const requestedMode = requestUrl.searchParams.get("mode");
+  const mode = requestedMode === "random" ? "random" : "sequence";
+  const seed = requestUrl.searchParams.get("seed") || "photos";
+  const page = Math.max(1, Number(requestUrl.searchParams.get("page") || 1));
+  const limit = Math.min(120, Math.max(24, Number(requestUrl.searchParams.get("limit") || 72)));
+  const total = manifest.photoCount || 0;
+  const start = (page - 1) * limit;
+  const end = Math.min(start + limit, total);
+  const photos = [];
+
+  for (let position = start; position < end; position += 1) {
+    const offset = mode === "random" ? randomPhotoOffset(position, total, seed) : position;
+    const photo = await staticPhotoFromOffset(offset);
+    if (photo) photos.push(photo);
+  }
+
+  return {
+    ok: true,
+    mode,
+    seed,
+    page,
+    limit,
+    total,
+    photos
+  };
+}
+
+async function staticLikeResponse(options) {
+  let body = {};
+  try {
+    body = JSON.parse(options.body || "{}");
+  } catch {
+    throw new Error("Invalid request body");
+  }
+
+  const albumId = String(body.albumId || "");
+  const albumDelta = Math.min(25, Math.max(0, Number(body.albumDelta || 0)));
+  staticData.likes.albums[albumId] = (staticData.likes.albums[albumId] || 0) + albumDelta;
+
+  if (Array.isArray(body.likes)) {
+    for (const like of body.likes.slice(0, 100)) {
+      const photoId = Number(like.photoId);
+      const delta = Math.min(25, Math.max(0, Number(like.delta || 0)));
+      if (!Number.isFinite(photoId) || delta <= 0) continue;
+      const key = `${albumId}:${photoId}`;
+      staticData.likes.photos[key] = (staticData.likes.photos[key] || 0) + delta;
+    }
+  }
+
+  saveStaticLikes();
+  return {
+    ok: true,
+    count: staticData.likes.albums[albumId] || 0
+  };
 }
 
 function formatCount(value) {
@@ -579,7 +944,7 @@ function unrenderAlbumPage(entry) {
 }
 
 function syncVisibleAlbumPages(options = {}) {
-  if (location.pathname !== "/" || activeTab === "photos" || searchQuery) return;
+  if (appPathname() !== "/" || activeTab === "photos" || searchQuery) return;
   const state = tabs[activeTab];
   const grid = app.querySelector("[data-tab-grid]");
   if (!state?.pages || !grid) return;
@@ -628,7 +993,7 @@ function appendAlbumPage(tab, data) {
   };
   state.pages.push(entry);
   state.albums.push(...data.albums);
-  if (location.pathname !== "/" || activeTab !== tab || searchQuery) return;
+  if (appPathname() !== "/" || activeTab !== tab || searchQuery) return;
 
   const grid = app.querySelector("[data-tab-grid]");
   if (!grid) return;
@@ -645,7 +1010,7 @@ function renderAlbumTabGrid(tab, options = {}) {
   const state = tabs[tab];
   const grid = app.querySelector("[data-tab-grid]");
   if (!state || !grid) return;
-  if (location.pathname !== "/" || activeTab !== tab || searchQuery) return;
+  if (appPathname() !== "/" || activeTab !== tab || searchQuery) return;
 
   const wasAlbumGrid = grid.dataset.gridKind === `albums:${tab}`;
   grid.className = "album-pages";
@@ -766,11 +1131,11 @@ function renderPhotoPage(entry, options = {}) {
 }
 
 function schedulePhotoRelayout() {
-  if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
+  if (appPathname() !== "/" || activeTab !== "photos" || searchQuery) return;
   clearTimeout(photoRelayoutTimer);
   photoRelayoutTimer = setTimeout(() => {
     photoRelayoutTimer = null;
-    if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
+    if (appPathname() !== "/" || activeTab !== "photos" || searchQuery) return;
     renderPhotoTabGrid({ force: true });
   }, 420);
 }
@@ -787,7 +1152,7 @@ function unrenderPhotoPage(entry) {
 }
 
 function syncVisiblePhotoPages(options = {}) {
-  if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
+  if (appPathname() !== "/" || activeTab !== "photos" || searchQuery) return;
   const state = tabs.photos;
   const grid = app.querySelector("[data-tab-grid]");
   if (!grid) return;
@@ -829,7 +1194,7 @@ function appendPhotoPage(data) {
   if (state.photos.length > expectedStart) return;
 
   state.photos.push(...data.photos);
-  if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
+  if (appPathname() !== "/" || activeTab !== "photos" || searchQuery) return;
 
   const grid = app.querySelector("[data-tab-grid]");
   if (!grid) return;
@@ -841,7 +1206,7 @@ function renderPhotoTabGrid(options = {}) {
   const state = tabs.photos;
   const grid = app.querySelector("[data-tab-grid]");
   if (!grid) return;
-  if (location.pathname !== "/" || activeTab !== "photos" || searchQuery) return;
+  if (appPathname() !== "/" || activeTab !== "photos" || searchQuery) return;
 
   const config = photoLayoutConfig(grid);
   if (config.width < 100) return;
@@ -1005,7 +1370,7 @@ async function loadTabPage(tab, page) {
 }
 
 function scheduleNextPagePrefetch(tab) {
-  if (searchQuery || location.pathname !== "/") return;
+  if (searchQuery || appPathname() !== "/") return;
   setTimeout(() => prefetchNextTabPage(tab), PREFETCH_DELAY);
 }
 
@@ -1074,12 +1439,12 @@ function sentinelNearViewport() {
 }
 
 function onHomeScroll() {
-  if (location.pathname.startsWith("/album/")) {
+  if (appPathname().startsWith("/album/")) {
     requestDetailPageSync();
     return;
   }
 
-  if (location.pathname !== "/" || searchQuery) return;
+  if (appPathname() !== "/" || searchQuery) return;
   if (activeTab === "photos") requestPhotoPageSync();
   else requestAlbumPageSync();
   if (sentinelNearViewport()) {
@@ -1092,7 +1457,7 @@ function onHomeScroll() {
 }
 
 function renderHomePhotoGridOnResize() {
-  if (location.pathname !== "/" || searchQuery) return;
+  if (appPathname() !== "/" || searchQuery) return;
   clearTimeout(photoResizeTimer);
   photoResizeTimer = setTimeout(() => {
     if (activeTab === "photos") renderPhotoTabGrid({ force: true });
@@ -1319,7 +1684,7 @@ function renderDetailPage(entry, options = {}) {
 }
 
 function scheduleDetailRelayout() {
-  if (!currentAlbum || !location.pathname.startsWith("/album/")) return;
+  if (!currentAlbum || !appPathname().startsWith("/album/")) return;
   clearTimeout(detailRelayoutTimer);
   detailRelayoutTimer = setTimeout(() => {
     detailRelayoutTimer = null;
@@ -1341,7 +1706,7 @@ function unrenderDetailPage(entry) {
 }
 
 function syncVisibleDetailPages(options = {}) {
-  if (!location.pathname.startsWith("/album/") || !currentAlbum?.detailPages) return;
+  if (!appPathname().startsWith("/album/") || !currentAlbum?.detailPages) return;
   const container = app.querySelector("[data-rows]");
   if (!container) return;
 
@@ -1399,7 +1764,7 @@ function renderDetailRows(options = {}) {
 }
 
 function renderDetailRowsOnResize() {
-  if (!currentAlbum || !location.pathname.startsWith("/album/")) return;
+  if (!currentAlbum || !appPathname().startsWith("/album/")) return;
   clearTimeout(detailResizeTimer);
   detailResizeTimer = setTimeout(() => renderDetailRows({ force: true }), 120);
 }
@@ -1622,7 +1987,7 @@ function handleTouch(event) {
 }
 
 function navigate(path) {
-  history.pushState({}, "", path);
+  history.pushState({}, "", appUrl(path));
   route().catch(errorPanel);
 }
 
@@ -1630,7 +1995,7 @@ async function route() {
   window.removeEventListener("resize", renderDetailRowsOnResize);
   infiniteObserver?.disconnect();
   closeLightbox();
-  const match = location.pathname.match(/^\/album\/([^/]+)$/);
+  const match = appPathname().match(/^\/album\/([^/]+)$/);
   try {
     if (match) {
       await renderAlbum(decodeURIComponent(match[1]));
