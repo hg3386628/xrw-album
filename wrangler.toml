@@ -1,0 +1,13 @@
+name = "xrw-album-workers"
+main = "src/worker.js"
+compatibility_date = "2026-07-03"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "xrw-album-test"
+database_id = "592deba3-cf95-4f1a-9fe7-faf5e45ffb08"

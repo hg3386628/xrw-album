@@ -6,6 +6,9 @@ npm-debug.log*
 .env.*
 
 data/likes.json
+data/d1-*.sql
+.wrangler/
+dist-worker-dry-run/
 
 local-*.png
 remote-*.png

@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "build:data": "node scripts/build-data.js",
+    "export:d1": "node scripts/export-d1-sql.js",
     "start": "node server.js",
-    "check": "node --check server.js && node --check scripts/build-data.js && node --check public/app.js && node --check scripts/test-photos-api.js",
-    "test:photos": "node scripts/test-photos-api.js"
+    "check": "node --check server.js && node --check scripts/build-data.js && node --check scripts/export-d1-sql.js && node --check public/app.js && node --check src/shared.js && node --check src/worker.js && node --check scripts/test-photos-api.js && node --check scripts/test-worker-api.js",
+    "test:photos": "node scripts/test-photos-api.js",
+    "test:worker": "node scripts/test-worker-api.js"
   },
   "engines": {
     "node": ">=18"
