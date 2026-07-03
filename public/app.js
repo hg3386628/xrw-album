@@ -44,7 +44,8 @@ const staticData = {
   albums: null,
   details: new Map(),
   shards: new Map(),
-  albumOffsets: null,
+  photoOffsets: new Map(),
+  photoOrders: new Map(),
   randomAlbums: new Map(),
   likes: readStaticLikes()
 };
@@ -194,37 +195,6 @@ function sample(source, count, seedValue) {
   }
 
   return result;
-}
-
-function greatestCommonDivisor(left, right) {
-  let a = Math.abs(left);
-  let b = Math.abs(right);
-  while (b) {
-    const next = a % b;
-    a = b;
-    b = next;
-  }
-  return a;
-}
-
-function coprimePhotoStep(total, seedValue) {
-  if (total <= 1) return 0;
-  let step = seedFrom(`step:${seedValue}`) % total;
-  if (!step) step = 1;
-
-  while (greatestCommonDivisor(step, total) !== 1) {
-    step += 1;
-    if (step >= total) step = 1;
-  }
-
-  return step;
-}
-
-function randomPhotoOffset(position, total, seedValue) {
-  if (total <= 1) return 0;
-  const step = coprimePhotoStep(total, seedValue);
-  const shift = seedFrom(`shift:${seedValue}`) % total;
-  return (position * step + shift) % total;
 }
 
 async function getJson(url, options) {
@@ -390,12 +360,16 @@ async function staticAlbumsResponse(requestUrl) {
   };
 }
 
-async function staticPhotoOffsets() {
-  if (staticData.albumOffsets) return staticData.albumOffsets;
+async function staticPhotoOffsets(mode = "sequence", seedValue = "photos") {
+  const key = mode === "random" ? `random:${seedValue}` : "sequence";
+  if (staticData.photoOffsets.has(key)) return staticData.photoOffsets.get(key);
 
-  const albums = [...await staticAlbums()].reverse();
+  const albums = await staticAlbums();
+  const orderedAlbums = mode === "random"
+    ? staticShuffledAlbums(albums, `photos:${seedValue}`)
+    : [...albums].reverse();
   let running = 0;
-  staticData.albumOffsets = albums.map((album) => {
+  const offsets = orderedAlbums.map((album) => {
     const entry = {
       album,
       start: running,
@@ -404,15 +378,60 @@ async function staticPhotoOffsets() {
     running = entry.end;
     return entry;
   });
-  return staticData.albumOffsets;
+  staticData.photoOffsets.set(key, offsets);
+  while (staticData.photoOffsets.size > 8) {
+    staticData.photoOffsets.delete(staticData.photoOffsets.keys().next().value);
+  }
+  return offsets;
 }
 
-async function staticPhotoFromOffset(offset) {
-  const offsets = await staticPhotoOffsets();
-  const entry = offsets.find((item) => offset >= item.start && offset < item.end);
+function staticPhotoOffsetEntry(offsets, offset) {
+  let low = 0;
+  let high = offsets.length - 1;
+
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const entry = offsets[middle];
+    if (offset < entry.start) {
+      high = middle - 1;
+    } else if (offset >= entry.end) {
+      low = middle + 1;
+    } else {
+      return entry;
+    }
+  }
+
+  return null;
+}
+
+function staticRandomPhotoIndex(albumId, count, localIndex, seedValue) {
+  if (count <= 1) return 0;
+  const key = `${seedValue}:${albumId}:${count}`;
+  if (!staticData.photoOrders.has(key)) {
+    const order = Array.from({ length: count }, (_, index) => index);
+    const rand = random(seedFrom(`photos:${seedValue}:${albumId}`));
+    for (let index = order.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(rand() * (index + 1));
+      [order[index], order[swapIndex]] = [order[swapIndex], order[index]];
+    }
+    staticData.photoOrders.set(key, order);
+    while (staticData.photoOrders.size > 256) {
+      staticData.photoOrders.delete(staticData.photoOrders.keys().next().value);
+    }
+  }
+  return staticData.photoOrders.get(key)[localIndex] ?? localIndex;
+}
+
+async function staticPhotoFromOffset(offset, mode = "sequence", seedValue = "photos") {
+  const offsets = await staticPhotoOffsets(mode, seedValue);
+  const entry = staticPhotoOffsetEntry(offsets, offset);
   if (!entry) return null;
   const detail = await staticAlbumDetail(entry.album.id);
-  const photo = detail.photos[offset - entry.start];
+  const localIndex = offset - entry.start;
+  const photoIndex = mode === "random"
+    ? staticRandomPhotoIndex(entry.album.id, detail.photos.length, localIndex, seedValue)
+    : localIndex;
+  const photo = detail.photos[photoIndex];
   if (!photo) return null;
   return {
     id: `${entry.album.id}-${photo.id}`,
@@ -437,8 +456,7 @@ async function staticPhotosResponse(requestUrl) {
   const photos = [];
 
   for (let position = start; position < end; position += 1) {
-    const offset = mode === "random" ? randomPhotoOffset(position, total, seed) : position;
-    const photo = await staticPhotoFromOffset(offset);
+    const photo = await staticPhotoFromOffset(position, mode, seed);
     if (photo) photos.push(photo);
   }
 
